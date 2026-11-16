@@ -1,0 +1,106 @@
+name: terraform
+
+on:
+  pull_request:
+    paths: ["**.tf", "envs/**", "lambda/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+
+# OIDC: GitHub gets short-lived AWS credentials. No access keys stored anywhere.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "1.11.4"
+
+jobs:
+  checks:
+    name: fmt, validate, security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - name: Static security scan (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true # flip to false once existing findings are triaged
+
+  plan:
+    name: plan (${{ matrix.env }})
+    needs: checks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [dev, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }} # read-only role for plans
+          aws-region: ap-south-1
+      - run: >
+          terraform init
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="key=${{ matrix.env }}/terraform.tfstate"
+          -backend-config="region=ap-south-1"
+          -backend-config="use_lockfile=true"
+      - run: terraform plan -input=false -var-file=envs/${{ matrix.env }}.tfvars -lock-timeout=5m
+
+  apply-dev:
+    name: apply (dev)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency: tf-dev # never two applies against one state at once
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEV }}
+          aws-region: ap-south-1
+      - run: >
+          terraform init
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="key=dev/terraform.tfstate"
+          -backend-config="region=ap-south-1"
+          -backend-config="use_lockfile=true"
+      - run: terraform apply -input=false -auto-approve -var-file=envs/dev.tfvars -lock-timeout=5m
+
+  apply-prod:
+    name: apply (prod)
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    environment: prod # configure required reviewers on this GitHub environment = manual approval
+    concurrency: tf-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: ap-south-1
+      - run: >
+          terraform init
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="key=prod/terraform.tfstate"
+          -backend-config="region=ap-south-1"
+          -backend-config="use_lockfile=true"
+      - run: terraform apply -input=false -auto-approve -var-file=envs/prod.tfvars -lock-timeout=5m

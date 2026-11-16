@@ -1,0 +1,7 @@
+# Copy to backend.hcl (git-ignored) and fill in the bucket created by ./bootstrap.
+# Use a different key per environment so dev and prod never share state.
+bucket       = "fashionhub-tfstate-<ACCOUNT_ID>"
+key          = "dev/terraform.tfstate"
+region       = "ap-south-1"
+encrypt      = true
+use_lockfile = true # S3-native locking: no DynamoDB lock table needed (Terraform >= 1.11)
