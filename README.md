@@ -1,4 +1,4 @@
-# FashionHub: production-style AWS shopping platform (Terraform)..
+# FashionHub: production-style AWS shopping platform (Terraform)
 
 Browser -> Route 53 -> CloudFront + WAF -> ALB -> ECS Fargate (catalog, orders)
 -> RDS PostgreSQL, DynamoDB, Valkey. Order events: SNS -> SQS -> Lambda -> SES email.
